@@ -83,6 +83,13 @@ enum CS_BITS {
     CONTROL_STORE_BITS
 } CS_BITS;
 
+enum COND {
+    NONE,       //unconditional
+    MEMR,       //memory ready
+    BRAN,       //branch
+    ADRM        //addressing mode
+};
+
 /***************************************************************/
 /* Functions to get at the control bits.                       */
 /***************************************************************/
@@ -136,6 +143,10 @@ int MEMORY[WORDS_IN_MEM][2];
 /***************************************************************/
 
 /***************************************************************/
+#define getUcode()  CONTROL_STORE[CURRENT_LATCHES.STATE_NUMBER]
+#define setState(x) NEXT_LATCHES.STATE_NUMBER = (x)
+#define getOpcode() ((CURRENT_LATCHES.IR & 0xF000) >> 12)
+
 
 /***************************************************************/
 /* LC-3b State info.                                           */
@@ -435,6 +446,7 @@ void init_control_store(char *ucode_filename) {
 	    printf("Warning: Extra bit(s) in control store file %s. Line: %d\n",
 		   ucode_filename, i);
     }
+
     printf("\n");
 }
 
@@ -581,7 +593,25 @@ void eval_micro_sequencer() {
    * Evaluate the address of the next state according to the 
    * micro sequencer logic. Latch the next microinstruction.
    */
-
+  if(GetIRD(getUcode())){
+      setState(getOpcode());
+  }
+  else{
+      switch(GetCOND(getUcode())){
+        case MEMR:
+            setState(GetJ(getUcode()) | (CURRENT_LATCHES.READY << 1));
+            break;
+        case BRAN:
+            setState(GetJ(getUcode()) | (CURRENT_LATCHES.BEN << 2));
+            break;
+        case ADRM:
+            setState(GetJ(getUcode()) | (CURRENT_LATCHES.IR & 0x0800 >> 11));
+            break;
+        default:
+            setState(GetJ(getUcode()));
+            break;
+      }
+  }
 }
 
 
