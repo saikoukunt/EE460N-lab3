@@ -89,7 +89,7 @@ enum CS_BITS {
 } CS_BITS;
 
 enum COND {
-    NONE,       //unconditional
+    UNCO,       //unconditional
     MEMR,       //memory ready
     BRAN,       //branch
     ADRM        //addressing mode
@@ -107,6 +107,21 @@ enum ADDR2MUX{
     OFF9,
     OFF6,
     ZERO
+};
+
+enum TSB_EN{  //values for concatenation of tristate buffer enables
+    NONE = 0,
+    G_ALU = 0x10,
+    G_MDR = 0x8,
+    G_SHF = 0x4,
+    G_MARMUX = 0x2,
+    G_PC = 0x1
+};
+
+enum PCMUX{
+    INCR_PC,
+    BUS_PC,
+    ADDER
 };
 
 /***************************************************************/
@@ -184,6 +199,7 @@ int GateMARMuxIn;
 int GatePCIn;
 
 int ADDEROut; //Address/PC calculation adder output
+int MEMMUXOut;
 
 typedef struct System_Latches_Struct{
 
@@ -672,11 +688,11 @@ void cycle_memory() {
         }
     }
     else{
-        if(GetDATA_SIZE(getUcode())){   //16-bit read
-            NEXT_LATCHES.MDR = (MEMORY[(CURRENT_LATCHES.MAR) >> 1][1] << 8) + (MEMORY[(CURRENT_LATCHES.MAR) >> 1][1]);
+        if(GetDATA_SIZE(getUcode()) && GetLD_MDR(getUcode())){   //16-bit read
+            MEMMUXOut = (MEMORY[(CURRENT_LATCHES.MAR) >> 1][1] << 8) + (MEMORY[(CURRENT_LATCHES.MAR) >> 1][1]);
         }
         else{   //8-bit read
-            NEXT_LATCHES.MDR = MEMORY[(CURRENT_LATCHES.MAR) << 1][CURRENT_LATCHES.MAR % 1];
+            MEMMUXOut = MEMORY[(CURRENT_LATCHES.MAR) << 1][CURRENT_LATCHES.MAR % 1];
         }
     }
     MEM_CYC = 0;
@@ -762,9 +778,31 @@ void eval_bus_drivers() {
    * tristate drivers. 
    */
 void drive_bus() {
-
-   
-
+    int concat = (GetGATE_ALU(getUcode()) << 4) + (GetGATE_MDR(getUcode()) << 3) + (GetGATE_SHF(getUcode()) << 2)
+                + (GetGATE_MARMUX(getUcode()) << 1) + (GetGATE_PC(getUcode()));
+    switch(concat){
+    case NONE:
+        BUS = 0;
+        break;
+    case G_ALU:
+        BUS = Low16bits(GateALUIn);
+        break;
+    case G_MDR:
+        BUS = Low16bits(GateMDRIn);
+        break;
+    case G_SHF:
+        BUS = Low16bits(GateSHFIn);
+        break;
+    case G_MARMUX:
+        BUS = Low16bits(GateMARMuxIn);
+        break;
+    case G_PC:
+        BUS = Low16bits(GatePCIn);
+        break;
+    default:
+        printf("you dumb bitch - multiple bus drivers\n");
+        break;
+    }
 }
 
   /* 
@@ -774,7 +812,54 @@ void drive_bus() {
    * after drive_bus.
    */       
 void latch_datapath_values() {
+    //IR
+    if(GetLD_IR(getUcode())) NEXT_LATCHES.IR = BUS;
 
+    //CC
+    if(GetLD_CC(getUcode())){
+        NEXT_LATCHES.N = 0;
+        NEXT_LATCHES.Z = 0;
+        NEXT_LATCHES.P = 0;
+        if(BUS > 0) NEXT_LATCHES.P = 1;
+        else if(BUS == 0) NEXT_LATCHES.Z = 1;
+        else NEXT_LATCHES.N = 1;
+    }
 
+    //PC
+    if(GetLD_PC(getUcode())){
+        int PCMUXSel = GetPCMUX(getUcode());
+        switch(PCMUXSel){
+        case INCR_PC:
+            NEXT_LATCHES.PC = CURRENT_LATCHES.PC + 2;
+            break;
+        case BUS_PC:
+            NEXT_LATCHES.PC = BUS;
+            break;
+        case ADDER:
+            NEXT_LATCHES.PC = ADDEROut;
+            break;
+        }
+    }
 
+    //MAR
+    if(GetLD_MAR(getUcode())){
+        NEXT_LATCHES.MAR = BUS;
+    }
+
+    //MDR
+    if(GetLD_MDR(getUcode())){
+        if(GetMIO_EN(getUcode())){
+            NEXT_LATCHES.MDR = MEMMUXOut;
+        }
+        else{
+            NEXT_LATCHES.MDR = (GetDATA_SIZE(getUcode())) ? BUS : BUS & 0x00FF;
+        }
+    }
+
+    //BEN
+    if(GetLD_BEN(getUcode())){
+        int instr = CURRENT_LATCHES.IR;
+        NEXT_LATCHES.BEN = (CURRENT_LATCHES.N && (instr & 0x0800)) || (CURRENT_LATCHES.Z && (instr & 0x0400)) || 
+            (CURRENT_LATCHES.P && (instr & 0x0200));
+    }
 }
