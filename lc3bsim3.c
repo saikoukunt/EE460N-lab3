@@ -48,6 +48,7 @@ void latch_datapath_values();
 #define sext_off6(x)  (((x) | ((x) >> 5) * 0xFFFFFFC0))
 #define sext_off9(x)  (((x) | ((x) >> 8) * 0xFFFFFE00)) 
 #define sext_off11(x) (((x) | ((x) >> 9) * 0xFFFFF800)) 
+#define sext_byte(x)  (((x) | ((x) >> 7) * 0xFF00)) //Automatically omits upper 16 bits
 
 /***************************************************************/
 /* Definition of the control store layout.                     */
@@ -103,10 +104,10 @@ enum ALUK {
 };
 
 enum ADDR2MUX{
-    OFF11,
-    OFF9,
+    ZERO,
     OFF6,
-    ZERO
+    OFF9,
+    OFF11,
 };
 
 enum TSB_EN{  //values for concatenation of tristate buffer enables
@@ -661,6 +662,7 @@ void eval_micro_sequencer() {
 
     setState(nextState);
     memcpy(NEXT_LATCHES.MICROINSTRUCTION, CONTROL_STORE[nextState], sizeof(int)*CONTROL_STORE_BITS);
+    printf("current: %d, next: %d\n", CURRENT_LATCHES.STATE_NUMBER, NEXT_LATCHES.STATE_NUMBER);
 }
 
   /* 
@@ -679,26 +681,29 @@ void cycle_memory() {
   if(CURRENT_LATCHES.READY){
     //Perform the memory operation
     if(GetR_W(getUcode())){
+        int we0, we1;
         if(GetDATA_SIZE(getUcode())){ //16-bit write
-            MEMORY[(CURRENT_LATCHES.MAR) >> 1][0] = CURRENT_LATCHES.MDR & 0xFF;
-            MEMORY[(CURRENT_LATCHES.MAR) >> 1][1] = CURRENT_LATCHES.MDR & 0xFF00;
+            we1 = 1;
+            we0 = 1;
         }
-        else{  //8-bit write
-            MEMORY[(CURRENT_LATCHES.MAR) >> 1][CURRENT_LATCHES.MAR % 1] =  CURRENT_LATCHES.MDR & 0xFF;
+        else if(CURRENT_LATCHES.MAR % 2){
+            we1 = 1;
+            we0 = 0;
         }
+        else{
+            we1 = 0;
+            we0 = 1;
+        }
+        if(we1) MEMORY[CURRENT_LATCHES.MAR >> 1][1] = (CURRENT_LATCHES.MDR & 0xFF00) >> 8;
+        if(we0) MEMORY[CURRENT_LATCHES.MAR >> 1][0] = CURRENT_LATCHES.MDR & 0xFF;
     }
     else{
-        if(GetDATA_SIZE(getUcode()) && GetLD_MDR(getUcode())){   //16-bit read
-            MEMMUXOut = (MEMORY[(CURRENT_LATCHES.MAR) >> 1][1] << 8) + (MEMORY[(CURRENT_LATCHES.MAR) >> 1][1]);
-        }
-        else{   //8-bit read
-            MEMMUXOut = MEMORY[(CURRENT_LATCHES.MAR) << 1][CURRENT_LATCHES.MAR % 1];
-        }
+        MEMMUXOut = (MEMORY[(CURRENT_LATCHES.MAR) >> 1][1] << 8) + (MEMORY[(CURRENT_LATCHES.MAR) >> 1][0]);
     }
     MEM_CYC = 0;
+    NEXT_LATCHES.READY = 0;
   }
 }
-
 
   /* 
    * Datapath routine emulating operations before driving the bus.
@@ -711,8 +716,23 @@ void cycle_memory() {
    */    
 void eval_bus_drivers() {
     int instr = CURRENT_LATCHES.IR;
+
+    //GatePC
     GatePCIn = CURRENT_LATCHES.PC;
-    GateMDRIn = CURRENT_LATCHES.MDR;
+
+    //GateMDR
+    if(GetDATA_SIZE(getUcode())){
+        GateMDRIn = CURRENT_LATCHES.MDR;
+    }
+    else{
+        if(CURRENT_LATCHES.MAR % 2){
+            GateMDRIn = sext_byte((CURRENT_LATCHES.MDR & 0xFF00) >> 8);
+        }
+        else{
+            GateMDRIn = sext_byte(CURRENT_LATCHES.MDR & 0x00FF);
+        }
+    }
+
 
     int SR1 = (GetSR1MUX(getUcode())) ? ((instr & 0x01C0) >> 6) : ((instr & 0x0E00) >> 9);
     int SR1MUXOut = CURRENT_LATCHES.REGS[SR1];
@@ -749,7 +769,7 @@ void eval_bus_drivers() {
         GateSHFIn = GateSHFIn << (instr & 0x000F);
     }
 
-    int ADDR1MUXOut = (GetADDR1MUX(getUcode())) ? (CURRENT_LATCHES.PC) : SR1MUXOut;
+    int ADDR1MUXOut = (GetADDR1MUX(getUcode())) ? SR1MUXOut : CURRENT_LATCHES.PC;
     int ADDR2MUXOut;
     switch(GetADDR2MUX(getUcode())){
         case OFF11:
@@ -769,8 +789,8 @@ void eval_bus_drivers() {
     } 
 
     int LSHF1Out = (GetLSHF1(getUcode())) ? ADDR2MUXOut << 1 : ADDR2MUXOut;
-    ADDEROut = LSHF1Out + ADDR1MUX;
-    GateMARMuxIn = (GetMARMUX(getUcode())) ? (instr & 0x00FF) << 1 : ADDEROut;
+    ADDEROut = LSHF1Out + ADDR1MUXOut;
+    GateMARMuxIn = (GetMARMUX(getUcode())) ? ADDEROut : (instr & 0x00FF) << 1;
 }
 
   /* 
@@ -820,7 +840,7 @@ void latch_datapath_values() {
         NEXT_LATCHES.N = 0;
         NEXT_LATCHES.Z = 0;
         NEXT_LATCHES.P = 0;
-        if(BUS > 0) NEXT_LATCHES.P = 1;
+        if(BUS > 0 && BUS < 0x8000) NEXT_LATCHES.P = 1;
         else if(BUS == 0) NEXT_LATCHES.Z = 1;
         else NEXT_LATCHES.N = 1;
     }
@@ -849,10 +869,15 @@ void latch_datapath_values() {
     //MDR
     if(GetLD_MDR(getUcode())){
         if(GetMIO_EN(getUcode())){
-            NEXT_LATCHES.MDR = MEMMUXOut;
+            NEXT_LATCHES.MDR = Low16bits(MEMMUXOut);
         }
         else{
-            NEXT_LATCHES.MDR = (GetDATA_SIZE(getUcode())) ? BUS : BUS & 0x00FF;
+            if(CURRENT_LATCHES.MAR % 2){
+                NEXT_LATCHES.MDR = ((BUS & 0xFF) << 8) + (BUS & 0xFF);
+            }
+            else{
+                NEXT_LATCHES.MDR = Low16bits(BUS);
+            }
         }
     }
 
@@ -861,5 +886,11 @@ void latch_datapath_values() {
         int instr = CURRENT_LATCHES.IR;
         NEXT_LATCHES.BEN = (CURRENT_LATCHES.N && (instr & 0x0800)) || (CURRENT_LATCHES.Z && (instr & 0x0400)) || 
             (CURRENT_LATCHES.P && (instr & 0x0200));
+    }
+
+    //REG
+    if(GetLD_REG(getUcode())){
+        int DR = (GetDRMUX(getUcode())) ? 7 :(CURRENT_LATCHES.IR & 0x0E00) >> 9 ;
+        NEXT_LATCHES.REGS[DR] =  BUS;
     }
 }
