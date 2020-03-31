@@ -790,6 +790,7 @@ void eval_bus_drivers() {
 
     int LSHF1Out = (GetLSHF1(getUcode())) ? ADDR2MUXOut << 1 : ADDR2MUXOut;
     ADDEROut = LSHF1Out + ADDR1MUXOut;
+    ADDEROut = Low16bits(ADDEROut);
     GateMARMuxIn = (GetMARMUX(getUcode())) ? ADDEROut : (instr & 0x00FF) << 1;
 }
 
@@ -820,7 +821,7 @@ void drive_bus() {
         BUS = Low16bits(GatePCIn);
         break;
     default:
-        printf("you dumb bitch - multiple bus drivers\n");
+        printf("multiple bus drivers\n");
         break;
     }
 }
@@ -850,7 +851,7 @@ void latch_datapath_values() {
         int PCMUXSel = GetPCMUX(getUcode());
         switch(PCMUXSel){
         case INCR_PC:
-            NEXT_LATCHES.PC = CURRENT_LATCHES.PC + 2;
+            NEXT_LATCHES.PC = Low16bits(CURRENT_LATCHES.PC + 2);
             break;
         case BUS_PC:
             NEXT_LATCHES.PC = BUS;
