@@ -652,7 +652,7 @@ void eval_micro_sequencer() {
             nextState = GetJ(getUcode()) | (CURRENT_LATCHES.BEN << 2);
             break;
         case ADRM:
-            nextState = GetJ(getUcode()) | (CURRENT_LATCHES.IR & 0x0800 >> 11);
+            nextState = GetJ(getUcode()) | ((CURRENT_LATCHES.IR & 0x0800) >> 11);
             break;
         default:
             nextState = GetJ(getUcode());
